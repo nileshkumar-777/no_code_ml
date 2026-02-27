@@ -10,6 +10,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.model_selection import cross_val_score
 from sklearn.model_selection import GridSearchCV
 from sklearn.pipeline import Pipeline
+from sklearn.metrics import r2_score, accuracy_score
 
 # Import custom modules
 from config import MODEL_FILE
@@ -22,7 +23,7 @@ from inference import run_inference
 def train(csv_path, target_col):
 
     # ======================================================
-    #                LOAD FULL DATASET
+    # LOAD DATA
     # ======================================================
 
     df_full = pd.read_csv(csv_path)
@@ -33,7 +34,7 @@ def train(csv_path, target_col):
     print(f"\nDataset Loaded: {df_full.shape[0]} rows")
 
     # ======================================================
-    #            DATA MODE SELECTION
+    # DATA MODE SELECTION
     # ======================================================
 
     print("\nChoose Data Mode:")
@@ -74,7 +75,7 @@ def train(csv_path, target_col):
         return
 
     # ======================================================
-    #            SPLIT FEATURES AND TARGET
+    # SPLIT FEATURES & TARGET
     # ======================================================
 
     X_train = df_train.drop(columns=[target_col])
@@ -84,7 +85,7 @@ def train(csv_path, target_col):
     y_test = df_test[target_col]
 
     # ======================================================
-    #            TASK TYPE DETECTION
+    # TASK TYPE DETECTION
     # ======================================================
 
     if y_train.dtype in ["int64", "float64"] and y_train.nunique() > 20:
@@ -99,27 +100,27 @@ def train(csv_path, target_col):
         print(y_train.value_counts())
 
     # ======================================================
-    #            BUILD PREPROCESSING PIPELINE
+    # BUILD PREPROCESSING PIPELINE
     # ======================================================
 
     num_cols, cat_cols = detect_columns(df_train, target_col)
     preprocessing_pipeline = build_pipeline(num_cols, cat_cols)
 
     # ======================================================
-    #                LOAD MODELS
+    # LOAD MODELS
     # ======================================================
 
     models = get_models(task_type)
-
-    # ======================================================
-    #            TRAINING MODE SELECTION
-    # ======================================================
 
     print("\nSelect Training Mode:")
     print("1. Auto Select Best Model (5-Fold CV)")
     print("2. Manually Choose Model")
 
     mode = input("Enter option: ")
+
+    # ======================================================
+    # AUTO MODEL SELECTION
+    # ======================================================
 
     if mode == "1":
 
@@ -154,6 +155,10 @@ def train(csv_path, target_col):
         print(f"\nBest Model (CV Selected): {best_model_name}")
         final_model = models[best_model_name]
 
+    # ======================================================
+    # MANUAL MODEL SELECTION
+    # ======================================================
+
     elif mode == "2":
 
         print("\nAvailable Models:")
@@ -177,7 +182,7 @@ def train(csv_path, target_col):
         return
 
     # ======================================================
-    #         ENABLE HYPERPARAMETER TUNING (NEW)
+    # HYPERPARAMETER TUNING
     # ======================================================
 
     print("\nEnable Hyperparameter Tuning? (Y/N)")
@@ -190,37 +195,44 @@ def train(csv_path, target_col):
 
     if tuning_choice == "y":
 
-        print("\nRunning GridSearchCV...")
+        print("\nRunning GridSearchCV...\n")
 
-        # Example parameter grids
         param_grid = {}
+        model_name = final_model.__class__.__name__
 
-        if task_type == "regression":
+        # ---------------- XGBoost Regression ----------------
+        if model_name == "XGBRegressor":
 
-            if final_model.__class__.__name__ == "RandomForestRegressor":
-                param_grid = {
-                    "model__n_estimators": [100, 200],
-                    "model__max_depth": [None, 10, 20]
-                }
+            param_grid = {
+                "model__n_estimators": [150, 250],
+                "model__max_depth": [3, 4, 5],
+                "model__learning_rate": [0.03, 0.05],
+                "model__subsample": [0.8],
+                "model__colsample_bytree": [0.8],
+                "model__gamma": [0, 0.1],
+                "model__reg_lambda": [1, 3]
+            }
 
-            elif final_model.__class__.__name__ == "GradientBoostingRegressor":
-                param_grid = {
-                    "model__n_estimators": [100, 200],
-                    "model__learning_rate": [0.05, 0.1]
-                }
+        # ---------------- XGBoost Classification ----------------
+        elif model_name == "XGBClassifier":
 
-        else:  # classification
+            param_grid = {
+                "model__n_estimators": [150, 250],
+                "model__max_depth": [3, 4, 5],
+                "model__learning_rate": [0.03, 0.05],
+                "model__subsample": [0.8],
+                "model__colsample_bytree": [0.8],
+                "model__gamma": [0, 0.1],
+                "model__reg_lambda": [1, 3]
+            }
 
-            if final_model.__class__.__name__ == "RandomForestClassifier":
-                param_grid = {
-                    "model__n_estimators": [100, 200],
-                    "model__max_depth": [None, 10, 20]
-                }
+        # ---------------- RandomForest ----------------
+        elif "RandomForest" in model_name:
 
-            elif final_model.__class__.__name__ == "LogisticRegression":
-                param_grid = {
-                    "model__C": [0.1, 1, 10]
-                }
+            param_grid = {
+                "model__n_estimators": [100, 200],
+                "model__max_depth": [None, 10, 20]
+            }
 
         if param_grid:
 
@@ -240,23 +252,49 @@ def train(csv_path, target_col):
             print(grid_search.best_params_)
 
         else:
-            print("No parameter grid defined for this model. Skipping tuning.")
+            print("No tuning grid defined for this model. Skipping.")
+            full_pipeline.fit(X_train, y_train)
 
     else:
-        print("Skipping Hyperparameter Tuning.")
         full_pipeline.fit(X_train, y_train)
 
     # ======================================================
-    #        FINAL TEST EVALUATION
+    # OVERFITTING CHECK
+    # ======================================================
+
+    print("\nChecking for Overfitting...\n")
+
+    train_preds = full_pipeline.predict(X_train)
+    test_preds = full_pipeline.predict(X_test)
+
+    if task_type == "regression":
+        train_score = r2_score(y_train, train_preds)
+        test_score = r2_score(y_test, test_preds)
+        print(f"Train R2: {train_score:.4f}")
+        print(f"Test  R2: {test_score:.4f}")
+    else:
+        train_score = accuracy_score(y_train, train_preds)
+        test_score = accuracy_score(y_test, test_preds)
+        print(f"Train Accuracy: {train_score:.4f}")
+        print(f"Test  Accuracy: {test_score:.4f}")
+
+    gap = train_score - test_score
+    print(f"Generalization Gap: {gap:.4f}")
+
+    if gap > 0.10:
+        print("⚠ Warning: Possible Overfitting Detected!")
+    else:
+        print("Model Generalization Looks Good.")
+
+    # ======================================================
+    # FINAL EVALUATION
     # ======================================================
 
     print("\nFinal Evaluation on Test Set:\n")
-
-    preds = full_pipeline.predict(X_test)
-    evaluate_model(task_type, y_test, preds)
+    evaluate_model(task_type, y_test, test_preds)
 
     # ======================================================
-    #                SAVE FULL PIPELINE
+    # SAVE MODEL
     # ======================================================
 
     joblib.dump(full_pipeline, MODEL_FILE)
@@ -265,7 +303,7 @@ def train(csv_path, target_col):
 
 
 # ==========================================================
-#                    CLI MENU SECTION
+# CLI MENU
 # ==========================================================
 
 if __name__ == "__main__":
