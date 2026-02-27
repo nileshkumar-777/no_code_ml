@@ -8,9 +8,11 @@ import numpy as np
 
 from sklearn.model_selection import train_test_split
 from sklearn.model_selection import cross_val_score
+from sklearn.model_selection import GridSearchCV
+from sklearn.pipeline import Pipeline
 
 # Import custom modules
-from config import MODEL_FILE, PIPELINE_FILE
+from config import MODEL_FILE
 from preprocessing import detect_columns, build_pipeline
 from model_selection import get_models
 from evaluation import evaluate_model
@@ -87,28 +89,21 @@ def train(csv_path, target_col):
 
     if y_train.dtype in ["int64", "float64"] and y_train.nunique() > 20:
         task_type = "regression"
-        print("\nDetected Task Type: REGRESSION")
         scoring_metric = "r2"
+        print("\nDetected Task Type: REGRESSION")
     else:
         task_type = "classification"
+        scoring_metric = "accuracy"
         print("\nDetected Task Type: CLASSIFICATION")
         print("\nClass Distribution:")
         print(y_train.value_counts())
-        scoring_metric = "accuracy"
 
     # ======================================================
     #            BUILD PREPROCESSING PIPELINE
     # ======================================================
 
     num_cols, cat_cols = detect_columns(df_train, target_col)
-    pipeline = build_pipeline(num_cols, cat_cols)
-
-    # Fit pipeline ONLY on training data
-    pipeline.fit(X_train)
-
-    # Transform training data
-    X_train_prepared = pipeline.transform(X_train)
-    X_test_prepared = pipeline.transform(X_test)
+    preprocessing_pipeline = build_pipeline(num_cols, cat_cols)
 
     # ======================================================
     #                LOAD MODELS
@@ -121,14 +116,10 @@ def train(csv_path, target_col):
     # ======================================================
 
     print("\nSelect Training Mode:")
-    print("1. Auto Select Best Model (Using 5-Fold Cross Validation)")
+    print("1. Auto Select Best Model (5-Fold CV)")
     print("2. Manually Choose Model")
 
     mode = input("Enter option: ")
-
-    # ------------------------------------------------------
-    # AUTO MODE WITH CROSS VALIDATION
-    # ------------------------------------------------------
 
     if mode == "1":
 
@@ -139,10 +130,14 @@ def train(csv_path, target_col):
 
         for name, model in models.items():
 
-            # Perform 5-fold cross validation
+            full_pipeline = Pipeline([
+                ("preprocessing", preprocessing_pipeline),
+                ("model", model)
+            ])
+
             cv_scores = cross_val_score(
-                model,
-                X_train_prepared,
+                full_pipeline,
+                X_train,
                 y_train,
                 cv=5,
                 scoring=scoring_metric
@@ -157,12 +152,7 @@ def train(csv_path, target_col):
                 best_model_name = name
 
         print(f"\nBest Model (CV Selected): {best_model_name}")
-
         final_model = models[best_model_name]
-
-    # ------------------------------------------------------
-    # MANUAL MODE
-    # ------------------------------------------------------
 
     elif mode == "2":
 
@@ -187,28 +177,91 @@ def train(csv_path, target_col):
         return
 
     # ======================================================
-    #        FINAL TRAINING ON FULL TRAINING SET
+    #         ENABLE HYPERPARAMETER TUNING (NEW)
     # ======================================================
 
-    final_model.fit(X_train_prepared, y_train)
+    print("\nEnable Hyperparameter Tuning? (Y/N)")
+    tuning_choice = input("Enter option: ").lower()
+
+    full_pipeline = Pipeline([
+        ("preprocessing", preprocessing_pipeline),
+        ("model", final_model)
+    ])
+
+    if tuning_choice == "y":
+
+        print("\nRunning GridSearchCV...")
+
+        # Example parameter grids
+        param_grid = {}
+
+        if task_type == "regression":
+
+            if final_model.__class__.__name__ == "RandomForestRegressor":
+                param_grid = {
+                    "model__n_estimators": [100, 200],
+                    "model__max_depth": [None, 10, 20]
+                }
+
+            elif final_model.__class__.__name__ == "GradientBoostingRegressor":
+                param_grid = {
+                    "model__n_estimators": [100, 200],
+                    "model__learning_rate": [0.05, 0.1]
+                }
+
+        else:  # classification
+
+            if final_model.__class__.__name__ == "RandomForestClassifier":
+                param_grid = {
+                    "model__n_estimators": [100, 200],
+                    "model__max_depth": [None, 10, 20]
+                }
+
+            elif final_model.__class__.__name__ == "LogisticRegression":
+                param_grid = {
+                    "model__C": [0.1, 1, 10]
+                }
+
+        if param_grid:
+
+            grid_search = GridSearchCV(
+                full_pipeline,
+                param_grid,
+                cv=5,
+                scoring=scoring_metric,
+                n_jobs=-1
+            )
+
+            grid_search.fit(X_train, y_train)
+
+            full_pipeline = grid_search.best_estimator_
+
+            print("\nBest Parameters Found:")
+            print(grid_search.best_params_)
+
+        else:
+            print("No parameter grid defined for this model. Skipping tuning.")
+
+    else:
+        print("Skipping Hyperparameter Tuning.")
+        full_pipeline.fit(X_train, y_train)
 
     # ======================================================
-    #        FINAL EVALUATION ON TEST SET (ONLY ONCE)
+    #        FINAL TEST EVALUATION
     # ======================================================
 
     print("\nFinal Evaluation on Test Set:\n")
 
-    preds = final_model.predict(X_test_prepared)
+    preds = full_pipeline.predict(X_test)
     evaluate_model(task_type, y_test, preds)
 
     # ======================================================
-    #                SAVE MODEL & PIPELINE
+    #                SAVE FULL PIPELINE
     # ======================================================
 
-    joblib.dump(final_model, MODEL_FILE)
-    joblib.dump(pipeline, PIPELINE_FILE)
+    joblib.dump(full_pipeline, MODEL_FILE)
 
-    print("\nModel trained and saved successfully.")
+    print("\nFull pipeline trained and saved successfully.")
 
 
 # ==========================================================

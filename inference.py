@@ -2,40 +2,58 @@
 #                INFERENCE MODULE
 # ==========================================================
 
-import os                          # Used to check file existence
-import joblib                      # Used to load saved model
-import pandas as pd                # Used to read CSV
-from config import MODEL_FILE, PIPELINE_FILE  # Import file paths
+import os                          # Used to check if model file exists
+import joblib                      # Used to load trained pipeline
+import pandas as pd                # Used to read CSV files
+from config import MODEL_FILE      # Import saved pipeline file name
 
 
 def run_inference(csv_path, output_path="predictions.csv"):
     """
-    Perform inference using saved model and pipeline.
+    Perform inference using saved FULL pipeline
+    (Preprocessing + Model together).
     """
 
-    # Check if model exists
+    # ------------------------------------------------------
+    # CHECK IF TRAINED MODEL EXISTS
+    # ------------------------------------------------------
+
     if not os.path.exists(MODEL_FILE):
         raise FileNotFoundError("Train the model first")
 
-    # Load trained model
-    model = joblib.load(MODEL_FILE)
+    # ------------------------------------------------------
+    # LOAD FULL PIPELINE
+    # ------------------------------------------------------
 
-    # Load preprocessing pipeline
-    pipeline = joblib.load(PIPELINE_FILE)
+    # This pipeline already contains:
+    # 1. Preprocessing
+    # 2. Trained model
+    full_pipeline = joblib.load(MODEL_FILE)
 
-    # Load new data
+    # ------------------------------------------------------
+    # LOAD INPUT DATA
+    # ------------------------------------------------------
+
     df = pd.read_csv(csv_path)
 
-    # Apply preprocessing
-    transformed = pipeline.transform(df)
+    # ------------------------------------------------------
+    # GENERATE PREDICTIONS
+    # ------------------------------------------------------
 
-    # Generate predictions
-    predictions = model.predict(transformed)
+    # No manual preprocessing needed
+    # Pipeline handles everything internally
+    predictions = full_pipeline.predict(df)
 
-    # Add predictions column only
+    # ------------------------------------------------------
+    # ADD PREDICTIONS COLUMN
+    # ------------------------------------------------------
+
     df["predicted_value"] = predictions
 
-    # Save results
+    # ------------------------------------------------------
+    # SAVE RESULTS
+    # ------------------------------------------------------
+
     df.to_csv(output_path, index=False)
 
     print(f"Inference Complete. Predictions saved to: {output_path}")
