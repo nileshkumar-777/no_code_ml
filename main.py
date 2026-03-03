@@ -5,6 +5,8 @@
 import pandas as pd
 import joblib
 import numpy as np
+import os
+from datetime import datetime
 
 from sklearn.model_selection import train_test_split
 from sklearn.model_selection import cross_val_score
@@ -15,11 +17,144 @@ from sklearn.ensemble import VotingClassifier, VotingRegressor
 
 from explainability import generate_shap_explanations
 
-from config import MODEL_FILE
+from config import MODEL_DIR
 from preprocessing import detect_columns, build_pipeline
 from model_selection import get_models
 from evaluation import evaluate_model
 from inference import run_inference
+
+
+# ==========================================================
+# DATA VALIDATION LAYER
+# ==========================================================
+
+def validate_dataset(df, target_col):
+
+    print("\n================ DATA VALIDATION REPORT ================\n")
+
+    total_rows = df.shape[0]
+    total_cols = df.shape[1]
+
+    print(f"Total Rows: {total_rows}")
+    print(f"Total Columns: {total_cols}")
+
+    # 1️⃣ Missing Values
+    missing_percent = df.isnull().mean() * 100
+    high_missing = missing_percent[missing_percent > 20]
+
+    if not high_missing.empty:
+        print("\n⚠ Warning: Columns with >20% missing values:")
+        print(high_missing.sort_values(ascending=False))
+    else:
+        print("\nNo major missing value issues detected.")
+
+    # 2️⃣ Duplicate Rows
+    duplicate_count = df.duplicated().sum()
+    if duplicate_count > 0:
+        print(f"\n⚠ Warning: {duplicate_count} duplicate rows found.")
+    else:
+        print("\nNo duplicate rows detected.")
+
+    # 3️⃣ Constant Columns
+    constant_cols = [col for col in df.columns if df[col].nunique() <= 1]
+    if constant_cols:
+        print("\n⚠ Warning: Constant columns detected:")
+        print(constant_cols)
+    else:
+        print("\nNo constant columns detected.")
+
+    # 4️⃣ Small Dataset Warning
+    if total_rows < 200:
+        print("\n⚠ Warning: Dataset is small. Risk of overfitting.")
+
+    # 5️⃣ Class Imbalance (classification only)
+    if df[target_col].nunique() < 20:
+        class_distribution = df[target_col].value_counts(normalize=True) * 100
+        if class_distribution.min() < 10:
+            print("\n⚠ Warning: Class imbalance detected:")
+            print(class_distribution.round(2))
+
+    print("\n=========================================================\n")
+
+
+# ==========================================================
+# MODEL VERSIONING SYSTEM
+# ==========================================================
+
+def get_next_model_version(dataset_name):
+
+    if not os.path.exists(MODEL_DIR):
+        os.makedirs(MODEL_DIR)
+
+    existing_files = os.listdir(MODEL_DIR)
+    versions = []
+
+    for file in existing_files:
+        if file.startswith(dataset_name + "_v") and file.endswith(".pkl"):
+            try:
+                version = int(file.split("_v")[-1].replace(".pkl", ""))
+                versions.append(version)
+            except:
+                pass
+
+    next_version = 1 if not versions else max(versions) + 1
+    model_filename = f"{dataset_name}_v{next_version}.pkl"
+
+    return os.path.join(MODEL_DIR, model_filename)
+
+
+# ==========================================================
+# LEADERBOARD SYSTEM
+# ==========================================================
+
+def update_leaderboard(
+    dataset_name,
+    model_name,
+    training_mode,
+    cv_mean,
+    cv_std,
+    train_score,
+    test_score,
+    gap
+):
+
+    leaderboard_file = "leaderboard.csv"
+
+    if not os.path.exists(leaderboard_file):
+        df = pd.DataFrame(columns=[
+            "experiment_id",
+            "timestamp",
+            "dataset_name",
+            "model_name",
+            "training_mode",
+            "cv_mean",
+            "cv_std",
+            "train_score",
+            "test_score",
+            "gap"
+        ])
+        df.to_csv(leaderboard_file, index=False)
+
+    df = pd.read_csv(leaderboard_file)
+    experiment_id = 1 if df.empty else df["experiment_id"].max() + 1
+
+    new_entry = {
+        "experiment_id": experiment_id,
+        "timestamp": datetime.now(),
+        "dataset_name": dataset_name,
+        "model_name": model_name,
+        "training_mode": training_mode,
+        "cv_mean": cv_mean,
+        "cv_std": cv_std,
+        "train_score": train_score,
+        "test_score": test_score,
+        "gap": gap
+    }
+
+    df = pd.concat([df, pd.DataFrame([new_entry])], ignore_index=True)
+    df.to_csv(leaderboard_file, index=False)
+
+    print(f"\nExperiment Logged Successfully (ID: {experiment_id})")
 
 
 # ==========================================================
@@ -82,10 +217,12 @@ def run_cross_validation(models, preprocessing, X, y, task_type, scoring):
             scoring=scoring
         )
 
-        mean_score = np.mean(scores)
-        scores_dict[name] = mean_score
+        scores_dict[name] = {
+            "mean": np.mean(scores),
+            "std": np.std(scores)
+        }
 
-        print(f"{name} → CV Mean: {mean_score:.4f}")
+        print(f"{name} → CV Mean: {np.mean(scores):.4f} | Std: {np.std(scores):.4f}")
 
     return scores_dict
 
@@ -98,29 +235,22 @@ def build_top3_ensemble(models, scores_dict, task_type):
 
     sorted_models = sorted(
         scores_dict.items(),
-        key=lambda x: x[1],
+        key=lambda x: x[1]["mean"],
         reverse=True
     )
 
     top3 = sorted_models[:3]
 
     print("\nTop 3 Models Selected for Ensemble:")
-    for name, score in top3:
-        print(f"{name} ({score:.4f})")
+    for name, stats in top3:
+        print(f"{name} ({stats['mean']:.4f})")
 
     estimators = [(name, models[name]) for name, _ in top3]
 
     if task_type == "classification":
-        ensemble_model = VotingClassifier(
-            estimators=estimators,
-            voting="soft"
-        )
+        return VotingClassifier(estimators=estimators, voting="soft")
     else:
-        ensemble_model = VotingRegressor(
-            estimators=estimators
-        )
-
-    return ensemble_model
+        return VotingRegressor(estimators=estimators)
 
 
 # ==========================================================
@@ -134,7 +264,12 @@ def train(csv_path, target_col):
     if target_col not in df.columns:
         raise ValueError("Target column not found")
 
+    # 🔥 VALIDATION ADDED HERE
+    validate_dataset(df, target_col)
+
     print(f"\nDataset Loaded: {df.shape[0]} rows")
+
+    dataset_name = os.path.basename(csv_path).replace(".csv", "")
 
     df_train, df_test = train_test_split(
         df,
@@ -158,14 +293,10 @@ def train(csv_path, target_col):
 
     print(f"\nDetected Task Type: {task_type.upper()}")
 
-    # ---------------- PREPROCESSING ----------------
-
     num_cols, cat_cols = detect_columns(df_train, target_col)
     preprocessing_pipeline = build_pipeline(num_cols, cat_cols)
 
     models = get_models(task_type)
-
-    # ---------------- TRAINING MODE ----------------
 
     print("\nSelect Training Mode:")
     print("1. Auto Select Best Model")
@@ -175,26 +306,26 @@ def train(csv_path, target_col):
     mode = input("Enter option: ")
 
     final_model = None
-
-    # ---------------- AUTO BEST ----------------
+    training_mode = ""
+    cv_mean = None
+    cv_std = None
 
     if mode == "1":
 
         scores_dict = run_cross_validation(
-            models,
-            preprocessing_pipeline,
-            X_train,
-            y_train,
-            task_type,
-            scoring_metric
+            models, preprocessing_pipeline,
+            X_train, y_train,
+            task_type, scoring_metric
         )
 
-        best_model_name = max(scores_dict, key=scores_dict.get)
+        best_model_name = max(scores_dict, key=lambda x: scores_dict[x]["mean"])
+
         final_model = models[best_model_name]
+        training_mode = "Auto Best"
+        cv_mean = scores_dict[best_model_name]["mean"]
+        cv_std = scores_dict[best_model_name]["std"]
 
         print(f"\nBest Model Selected: {best_model_name}")
-
-    # ---------------- MANUAL ----------------
 
     elif mode == "2":
 
@@ -205,31 +336,29 @@ def train(csv_path, target_col):
 
         selection = int(input("Select model number: "))
         final_model = models[model_list[selection - 1]]
-
-    # ---------------- AUTO ENSEMBLE ----------------
+        training_mode = "Manual"
 
     elif mode == "3":
 
         scores_dict = run_cross_validation(
-            models,
-            preprocessing_pipeline,
-            X_train,
-            y_train,
-            task_type,
-            scoring_metric
+            models, preprocessing_pipeline,
+            X_train, y_train,
+            task_type, scoring_metric
         )
 
         final_model = build_top3_ensemble(
-            models,
-            scores_dict,
-            task_type
+            models, scores_dict, task_type
         )
+
+        best_model_name = max(scores_dict, key=lambda x: scores_dict[x]["mean"])
+
+        training_mode = "Auto Ensemble"
+        cv_mean = scores_dict[best_model_name]["mean"]
+        cv_std = scores_dict[best_model_name]["std"]
 
     else:
         print("Invalid option.")
         return
-
-    # ---------------- FINAL PIPELINE ----------------
 
     full_pipeline = Pipeline([
         ("preprocessing", preprocessing_pipeline),
@@ -237,8 +366,6 @@ def train(csv_path, target_col):
     ])
 
     full_pipeline.fit(X_train, y_train)
-
-    # ---------------- EVALUATION ----------------
 
     train_preds = full_pipeline.predict(X_train)
     test_preds = full_pipeline.predict(X_test)
@@ -250,18 +377,27 @@ def train(csv_path, target_col):
         train_score = accuracy_score(y_train, train_preds)
         test_score = accuracy_score(y_test, test_preds)
 
+    gap = train_score - test_score
+
     print(f"\nTrain Score: {train_score:.4f}")
     print(f"Test Score:  {test_score:.4f}")
-    print(f"Gap: {train_score - test_score:.4f}")
+    print(f"Gap: {gap:.4f}")
 
     print("\nFinal Evaluation:")
     evaluate_model(task_type, y_test, test_preds)
 
-    # ---------------- FEATURE IMPORTANCE ----------------
+    update_leaderboard(
+        dataset_name,
+        final_model.__class__.__name__,
+        training_mode,
+        cv_mean,
+        cv_std,
+        train_score,
+        test_score,
+        gap
+    )
 
     export_feature_importance(full_pipeline)
-
-    # ---------------- SHAP ----------------
 
     print("\nGenerate SHAP Explainability? (Y/N)")
     shap_choice = input().lower()
@@ -270,10 +406,10 @@ def train(csv_path, target_col):
         sample_data = X_test.sample(min(200, len(X_test)), random_state=42)
         generate_shap_explanations(full_pipeline, sample_data, task_type)
 
-    # ---------------- SAVE MODEL ----------------
+    model_path = get_next_model_version(dataset_name)
+    joblib.dump(full_pipeline, model_path)
 
-    joblib.dump(full_pipeline, MODEL_FILE)
-    print("\nModel saved successfully.")
+    print(f"\nModel saved successfully at: {model_path}")
 
 
 # ==========================================================

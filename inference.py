@@ -2,58 +2,73 @@
 #                INFERENCE MODULE
 # ==========================================================
 
-import os                          # Used to check if model file exists
-import joblib                      # Used to load trained pipeline
-import pandas as pd                # Used to read CSV files
-from config import MODEL_FILE      # Import saved pipeline file name
+import os
+import joblib
+import pandas as pd
+
+from config import MODEL_DIR
 
 
-def run_inference(csv_path, output_path="predictions.csv"):
-    """
-    Perform inference using saved FULL pipeline
-    (Preprocessing + Model together).
-    """
+# ==========================================================
+# LIST AVAILABLE MODELS
+# ==========================================================
 
-    # ------------------------------------------------------
-    # CHECK IF TRAINED MODEL EXISTS
-    # ------------------------------------------------------
+def list_available_models():
 
-    if not os.path.exists(MODEL_FILE):
-        raise FileNotFoundError("Train the model first")
+    if not os.path.exists(MODEL_DIR):
+        print("No models folder found. Train a model first.")
+        return []
 
-    # ------------------------------------------------------
-    # LOAD FULL PIPELINE
-    # ------------------------------------------------------
+    model_files = [f for f in os.listdir(MODEL_DIR) if f.endswith(".pkl")]
 
-    # This pipeline already contains:
-    # 1. Preprocessing
-    # 2. Trained model
-    full_pipeline = joblib.load(MODEL_FILE)
+    if not model_files:
+        print("No trained models found.")
+        return []
 
-    # ------------------------------------------------------
-    # LOAD INPUT DATA
-    # ------------------------------------------------------
+    print("\nAvailable Models:")
 
+    for idx, model in enumerate(model_files, 1):
+        print(f"{idx}. {model}")
+
+    return model_files
+
+
+# ==========================================================
+# RUN INFERENCE
+# ==========================================================
+
+def run_inference(csv_path):
+
+    model_files = list_available_models()
+
+    if not model_files:
+        return
+
+    selection = int(input("\nSelect model number to use: "))
+
+    if selection < 1 or selection > len(model_files):
+        print("Invalid selection.")
+        return
+
+    selected_model_file = model_files[selection - 1]
+    model_path = os.path.join(MODEL_DIR, selected_model_file)
+
+    print(f"\nLoading model: {selected_model_file}")
+
+    # Load full pipeline (preprocessing + model)
+    full_pipeline = joblib.load(model_path)
+
+    # Load inference data
     df = pd.read_csv(csv_path)
 
-    # ------------------------------------------------------
-    # GENERATE PREDICTIONS
-    # ------------------------------------------------------
-
-    # No manual preprocessing needed
-    # Pipeline handles everything internally
+    # Generate predictions
     predictions = full_pipeline.predict(df)
-
-    # ------------------------------------------------------
-    # ADD PREDICTIONS COLUMN
-    # ------------------------------------------------------
 
     df["predicted_value"] = predictions
 
-    # ------------------------------------------------------
-    # SAVE RESULTS
-    # ------------------------------------------------------
+    # Save output
+    output_filename = csv_path.replace(".csv", "_predictions.csv")
+    df.to_csv(output_filename, index=False)
 
-    df.to_csv(output_path, index=False)
-
-    print(f"Inference Complete. Predictions saved to: {output_path}")
+    print(f"\nInference Complete.")
+    print(f"Predictions saved to: {output_filename}")
