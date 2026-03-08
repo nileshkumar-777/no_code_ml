@@ -66,9 +66,39 @@ def run_inference(csv_path):
 
     df["predicted_value"] = predictions
 
-    # Save output
+    # ======================================================
+    # PREDICTION CONFIDENCE (for classification models)
+    # ======================================================
+
+    try:
+
+        model = full_pipeline.named_steps["model"]
+
+        if hasattr(model, "predict_proba"):
+
+            probabilities = full_pipeline.predict_proba(df)
+
+            confidence = probabilities.max(axis=1)
+
+            df["confidence"] = confidence
+
+            print("\nPrediction confidence added.")
+
+        else:
+
+            print("\nModel does not support probability confidence.")
+
+    except Exception as e:
+
+        print(f"\nConfidence calculation skipped: {e}")
+
+    # ======================================================
+    # SAVE OUTPUT
+    # ======================================================
+
     output_filename = csv_path.replace(".csv", "_predictions.csv")
+
     df.to_csv(output_filename, index=False)
 
-    print(f"\nInference Complete.")
+    print("\nInference Complete.")
     print(f"Predictions saved to: {output_filename}")

@@ -1,256 +1,73 @@
-# ==========================================================
-#                    MAIN ENTRY POINT
-# ==========================================================
-
 import pandas as pd
 import joblib
-import numpy as np
 import os
 from datetime import datetime
 
 from sklearn.model_selection import train_test_split
-from sklearn.model_selection import cross_val_score
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import r2_score, accuracy_score
-from sklearn.model_selection import StratifiedKFold
-from sklearn.ensemble import VotingClassifier, VotingRegressor
-
-from explainability import generate_shap_explanations
+from sklearn.feature_selection import SelectKBest, f_regression, f_classif
 
 from config import MODEL_DIR
 from preprocessing import detect_columns, build_pipeline
 from model_selection import get_models
 from evaluation import evaluate_model
-from inference import run_inference
+from inference import run_inference, list_available_models
+from explainability import generate_shap_explanations
+from validation import validate_dataset
+from versioning import get_next_model_version
+from leaderboard import update_leaderboard
+from training_utils import (
+    export_feature_importance,
+    run_cross_validation,
+    build_top3_ensemble
+)
+from hyperparameter import tune_model
 
 
 # ==========================================================
-# DATA VALIDATION LAYER
+# TRAINING REPORT GENERATOR
 # ==========================================================
 
-def validate_dataset(df, target_col):
-
-    print("\n================ DATA VALIDATION REPORT ================\n")
-
-    total_rows = df.shape[0]
-    total_cols = df.shape[1]
-
-    print(f"Total Rows: {total_rows}")
-    print(f"Total Columns: {total_cols}")
-
-    # 1️⃣ Missing Values
-    missing_percent = df.isnull().mean() * 100
-    high_missing = missing_percent[missing_percent > 20]
-
-    if not high_missing.empty:
-        print("\n⚠ Warning: Columns with >20% missing values:")
-        print(high_missing.sort_values(ascending=False))
-    else:
-        print("\nNo major missing value issues detected.")
-
-    # 2️⃣ Duplicate Rows
-    duplicate_count = df.duplicated().sum()
-    if duplicate_count > 0:
-        print(f"\n⚠ Warning: {duplicate_count} duplicate rows found.")
-    else:
-        print("\nNo duplicate rows detected.")
-
-    # 3️⃣ Constant Columns
-    constant_cols = [col for col in df.columns if df[col].nunique() <= 1]
-    if constant_cols:
-        print("\n⚠ Warning: Constant columns detected:")
-        print(constant_cols)
-    else:
-        print("\nNo constant columns detected.")
-
-    # 4️⃣ Small Dataset Warning
-    if total_rows < 200:
-        print("\n⚠ Warning: Dataset is small. Risk of overfitting.")
-
-    # 5️⃣ Class Imbalance (classification only)
-    if df[target_col].nunique() < 20:
-        class_distribution = df[target_col].value_counts(normalize=True) * 100
-        if class_distribution.min() < 10:
-            print("\n⚠ Warning: Class imbalance detected:")
-            print(class_distribution.round(2))
-
-    print("\n=========================================================\n")
-
-
-# ==========================================================
-# MODEL VERSIONING SYSTEM
-# ==========================================================
-
-def get_next_model_version(dataset_name):
-
-    if not os.path.exists(MODEL_DIR):
-        os.makedirs(MODEL_DIR)
-
-    existing_files = os.listdir(MODEL_DIR)
-    versions = []
-
-    for file in existing_files:
-        if file.startswith(dataset_name + "_v") and file.endswith(".pkl"):
-            try:
-                version = int(file.split("_v")[-1].replace(".pkl", ""))
-                versions.append(version)
-            except:
-                pass
-
-    next_version = 1 if not versions else max(versions) + 1
-    model_filename = f"{dataset_name}_v{next_version}.pkl"
-
-    return os.path.join(MODEL_DIR, model_filename)
-
-
-# ==========================================================
-# LEADERBOARD SYSTEM
-# ==========================================================
-
-def update_leaderboard(
+def generate_training_report(
     dataset_name,
+    task_type,
     model_name,
     training_mode,
     cv_mean,
-    cv_std,
     train_score,
     test_score,
-    gap
+    model_path
 ):
 
-    leaderboard_file = "leaderboard.csv"
+    report_file = f"{dataset_name}_training_report.txt"
 
-    if not os.path.exists(leaderboard_file):
-        df = pd.DataFrame(columns=[
-            "experiment_id",
-            "timestamp",
-            "dataset_name",
-            "model_name",
-            "training_mode",
-            "cv_mean",
-            "cv_std",
-            "train_score",
-            "test_score",
-            "gap"
-        ])
-        df.to_csv(leaderboard_file, index=False)
+    with open(report_file, "w") as f:
 
-    df = pd.read_csv(leaderboard_file)
-    experiment_id = 1 if df.empty else df["experiment_id"].max() + 1
+        f.write("=========== TRAINING REPORT ===========\n\n")
 
-    new_entry = {
-        "experiment_id": experiment_id,
-        "timestamp": datetime.now(),
-        "dataset_name": dataset_name,
-        "model_name": model_name,
-        "training_mode": training_mode,
-        "cv_mean": cv_mean,
-        "cv_std": cv_std,
-        "train_score": train_score,
-        "test_score": test_score,
-        "gap": gap
-    }
+        f.write(f"Timestamp: {datetime.now()}\n\n")
 
-    df = pd.concat([df, pd.DataFrame([new_entry])], ignore_index=True)
-    df.to_csv(leaderboard_file, index=False)
+        f.write(f"Dataset: {dataset_name}\n")
+        f.write(f"Task Type: {task_type}\n\n")
 
-    print(f"\nExperiment Logged Successfully (ID: {experiment_id})")
+        f.write(f"Model Used: {model_name}\n")
+        f.write(f"Training Mode: {training_mode}\n\n")
 
+        if cv_mean is not None:
+            f.write(f"Cross Validation Mean: {cv_mean:.4f}\n")
 
-# ==========================================================
-# FEATURE IMPORTANCE
-# ==========================================================
+        if train_score is not None:
+            f.write(f"Train Score: {train_score:.4f}\n")
 
-def export_feature_importance(trained_pipeline):
+        if test_score is not None:
+            f.write(f"Test Score: {test_score:.4f}\n")
 
-    try:
-        model = trained_pipeline.named_steps["model"]
-        preprocessing = trained_pipeline.named_steps["preprocessing"]
+        f.write(f"\nSaved Model Path: {model_path}\n")
 
-        feature_names = preprocessing.get_feature_names_out()
+        f.write("\n=======================================\n")
 
-        if hasattr(model, "feature_importances_"):
-
-            importance_df = pd.DataFrame({
-                "Feature": feature_names,
-                "Importance": model.feature_importances_
-            }).sort_values(by="Importance", ascending=False)
-
-            importance_df.to_csv("feature_importance.csv", index=False)
-
-            print("\nTop 10 Important Features:")
-            print(importance_df.head(10))
-
-        else:
-            print("\nFeature importance not supported.")
-
-    except Exception as e:
-        print(f"\nFeature importance failed: {e}")
-
-
-# ==========================================================
-# RUN CROSS VALIDATION
-# ==========================================================
-
-def run_cross_validation(models, preprocessing, X, y, task_type, scoring):
-
-    scores_dict = {}
-
-    for name, model in models.items():
-
-        temp_pipeline = Pipeline([
-            ("preprocessing", preprocessing),
-            ("model", model)
-        ])
-
-        cv_strategy = (
-            StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-            if task_type == "classification"
-            else 5
-        )
-
-        scores = cross_val_score(
-            temp_pipeline,
-            X,
-            y,
-            cv=cv_strategy,
-            scoring=scoring
-        )
-
-        scores_dict[name] = {
-            "mean": np.mean(scores),
-            "std": np.std(scores)
-        }
-
-        print(f"{name} → CV Mean: {np.mean(scores):.4f} | Std: {np.std(scores):.4f}")
-
-    return scores_dict
-
-
-# ==========================================================
-# BUILD TOP 3 ENSEMBLE
-# ==========================================================
-
-def build_top3_ensemble(models, scores_dict, task_type):
-
-    sorted_models = sorted(
-        scores_dict.items(),
-        key=lambda x: x[1]["mean"],
-        reverse=True
-    )
-
-    top3 = sorted_models[:3]
-
-    print("\nTop 3 Models Selected for Ensemble:")
-    for name, stats in top3:
-        print(f"{name} ({stats['mean']:.4f})")
-
-    estimators = [(name, models[name]) for name, _ in top3]
-
-    if task_type == "classification":
-        return VotingClassifier(estimators=estimators, voting="soft")
-    else:
-        return VotingRegressor(estimators=estimators)
+    print(f"\nTraining report saved: {report_file}")
 
 
 # ==========================================================
@@ -264,25 +81,63 @@ def train(csv_path, target_col):
     if target_col not in df.columns:
         raise ValueError("Target column not found")
 
-    # 🔥 VALIDATION ADDED HERE
     validate_dataset(df, target_col)
-
-    print(f"\nDataset Loaded: {df.shape[0]} rows")
 
     dataset_name = os.path.basename(csv_path).replace(".csv", "")
 
-    df_train, df_test = train_test_split(
-        df,
-        test_size=0.2,
-        random_state=42
-    )
+    # ======================================================
+    # DATA TRAINING MODE
+    # ======================================================
 
-    X_train = df_train.drop(columns=[target_col])
-    y_train = df_train[target_col]
-    X_test = df_test.drop(columns=[target_col])
-    y_test = df_test[target_col]
+    print("\nSelect Data Training Mode:")
+    print("1. Train using Train/Test Split")
+    print("2. Train using FULL Dataset")
 
-    # ---------------- TASK TYPE ----------------
+    data_mode = input("Enter option: ")
+
+    if data_mode == "1":
+
+        df_train, df_test = train_test_split(
+            df,
+            test_size=0.2,
+            random_state=42
+        )
+
+        train_file = f"{dataset_name}_train.csv"
+        test_file = f"{dataset_name}_test.csv"
+
+        df_train.to_csv(train_file, index=False)
+        df_test.to_csv(test_file, index=False)
+
+        print(f"\nTrain CSV saved: {train_file}")
+        print(f"Test CSV saved: {test_file}")
+
+        X_train = df_train.drop(columns=[target_col])
+        y_train = df_train[target_col]
+
+        X_test = df_test.drop(columns=[target_col])
+        y_test = df_test[target_col]
+
+        print(f"\nTrain Size: {len(X_train)}")
+        print(f"Test Size: {len(X_test)}")
+
+    elif data_mode == "2":
+
+        X_train = df.drop(columns=[target_col])
+        y_train = df[target_col]
+
+        X_test = None
+        y_test = None
+
+        print("\nUsing FULL dataset for training")
+
+    else:
+        print("Invalid option")
+        return
+
+    # ======================================================
+    # TASK TYPE DETECTION
+    # ======================================================
 
     if y_train.dtype in ["int64", "float64"] and y_train.nunique() > 20:
         task_type = "regression"
@@ -293,10 +148,34 @@ def train(csv_path, target_col):
 
     print(f"\nDetected Task Type: {task_type.upper()}")
 
-    num_cols, cat_cols = detect_columns(df_train, target_col)
+    # ======================================================
+    # PREPROCESSING
+    # ======================================================
+
+    num_cols, cat_cols = detect_columns(X_train, target_col)
+
     preprocessing_pipeline = build_pipeline(num_cols, cat_cols)
 
+    # ======================================================
+    # FEATURE SELECTION
+    # ======================================================
+
+    if task_type == "regression":
+        feature_selector = SelectKBest(
+            score_func=f_regression,
+            k=min(10, X_train.shape[1])
+        )
+    else:
+        feature_selector = SelectKBest(
+            score_func=f_classif,
+            k=min(10, X_train.shape[1])
+        )
+
     models = get_models(task_type)
+
+    # ======================================================
+    # TRAINING MODE
+    # ======================================================
 
     print("\nSelect Training Mode:")
     print("1. Auto Select Best Model")
@@ -305,23 +184,42 @@ def train(csv_path, target_col):
 
     mode = input("Enter option: ")
 
+    # ======================================================
+    # HYPERPARAMETER OPTION
+    # ======================================================
+
+    print("\nEnable Hyperparameter Tuning?")
+    print("1. Yes")
+    print("2. No")
+
+    tuning_choice = input("Enter option: ")
+
     final_model = None
     training_mode = ""
     cv_mean = None
     cv_std = None
 
+    # ======================================================
+    # AUTO MODEL SELECTION
+    # ======================================================
+
     if mode == "1":
 
         scores_dict = run_cross_validation(
-            models, preprocessing_pipeline,
-            X_train, y_train,
-            task_type, scoring_metric
+            models,
+            preprocessing_pipeline,
+            X_train,
+            y_train,
+            task_type,
+            scoring_metric
         )
 
         best_model_name = max(scores_dict, key=lambda x: scores_dict[x]["mean"])
 
         final_model = models[best_model_name]
+
         training_mode = "Auto Best"
+
         cv_mean = scores_dict[best_model_name]["mean"]
         cv_std = scores_dict[best_model_name]["std"]
 
@@ -335,24 +233,36 @@ def train(csv_path, target_col):
             print(f"{i}. {name}")
 
         selection = int(input("Select model number: "))
+
+        if selection < 1 or selection > len(model_list):
+            print("Invalid selection")
+            return
+
         final_model = models[model_list[selection - 1]]
+
         training_mode = "Manual"
 
     elif mode == "3":
 
         scores_dict = run_cross_validation(
-            models, preprocessing_pipeline,
-            X_train, y_train,
-            task_type, scoring_metric
+            models,
+            preprocessing_pipeline,
+            X_train,
+            y_train,
+            task_type,
+            scoring_metric
         )
 
         final_model = build_top3_ensemble(
-            models, scores_dict, task_type
+            models,
+            scores_dict,
+            task_type
         )
 
         best_model_name = max(scores_dict, key=lambda x: scores_dict[x]["mean"])
 
         training_mode = "Auto Ensemble"
+
         cv_mean = scores_dict[best_model_name]["mean"]
         cv_std = scores_dict[best_model_name]["std"]
 
@@ -360,31 +270,64 @@ def train(csv_path, target_col):
         print("Invalid option.")
         return
 
+    # ======================================================
+    # BUILD PIPELINE
+    # ======================================================
+
     full_pipeline = Pipeline([
         ("preprocessing", preprocessing_pipeline),
+        ("feature_selection", feature_selector),
         ("model", final_model)
     ])
 
-    full_pipeline.fit(X_train, y_train)
+    # ======================================================
+    # HYPERPARAMETER TUNING
+    # ======================================================
 
-    train_preds = full_pipeline.predict(X_train)
-    test_preds = full_pipeline.predict(X_test)
+    if tuning_choice == "1":
 
-    if task_type == "regression":
-        train_score = r2_score(y_train, train_preds)
-        test_score = r2_score(y_test, test_preds)
+        full_pipeline = tune_model(
+            full_pipeline,
+            final_model.__class__.__name__,
+            X_train,
+            y_train,
+            scoring_metric
+        )
+
     else:
-        train_score = accuracy_score(y_train, train_preds)
-        test_score = accuracy_score(y_test, test_preds)
+        full_pipeline.fit(X_train, y_train)
 
-    gap = train_score - test_score
+    # ======================================================
+    # EVALUATION
+    # ======================================================
 
-    print(f"\nTrain Score: {train_score:.4f}")
-    print(f"Test Score:  {test_score:.4f}")
-    print(f"Gap: {gap:.4f}")
+    if X_test is not None:
 
-    print("\nFinal Evaluation:")
-    evaluate_model(task_type, y_test, test_preds)
+        train_preds = full_pipeline.predict(X_train)
+        test_preds = full_pipeline.predict(X_test)
+
+        if task_type == "regression":
+            train_score = r2_score(y_train, train_preds)
+            test_score = r2_score(y_test, test_preds)
+        else:
+            train_score = accuracy_score(y_train, train_preds)
+            test_score = accuracy_score(y_test, test_preds)
+
+        gap = train_score - test_score
+
+        print(f"\nTrain Score: {train_score:.4f}")
+        print(f"Test Score: {test_score:.4f}")
+
+        evaluate_model(task_type, y_test, test_preds)
+
+    else:
+        train_score = None
+        test_score = None
+        gap = None
+
+    # ======================================================
+    # LEADERBOARD
+    # ======================================================
 
     update_leaderboard(
         dataset_name,
@@ -397,40 +340,117 @@ def train(csv_path, target_col):
         gap
     )
 
+    # ======================================================
+    # FEATURE IMPORTANCE
+    # ======================================================
+
     export_feature_importance(full_pipeline)
+
+    # ======================================================
+    # DISPLAY SELECTED FEATURES
+    # ======================================================
+
+    try:
+
+        selector = full_pipeline.named_steps["feature_selection"]
+        mask = selector.get_support()
+
+        feature_names = preprocessing_pipeline.get_feature_names_out()
+
+        selected_features = [
+            name for name, keep in zip(feature_names, mask) if keep
+        ]
+
+        print("\nSelected Features:")
+
+        for f in selected_features:
+            print(f)
+
+    except Exception:
+        pass
+
+    # ======================================================
+    # SHAP EXPLAINABILITY
+    # ======================================================
 
     print("\nGenerate SHAP Explainability? (Y/N)")
     shap_choice = input().lower()
 
     if shap_choice == "y":
-        sample_data = X_test.sample(min(200, len(X_test)), random_state=42)
-        generate_shap_explanations(full_pipeline, sample_data, task_type)
+
+        sample_data = X_train.sample(
+            min(200, len(X_train)),
+            random_state=42
+        )
+
+        generate_shap_explanations(
+            full_pipeline,
+            sample_data,
+            task_type
+        )
+
+    # ======================================================
+    # SAVE MODEL
+    # ======================================================
 
     model_path = get_next_model_version(dataset_name)
+
     joblib.dump(full_pipeline, model_path)
 
     print(f"\nModel saved successfully at: {model_path}")
 
+    # ======================================================
+    # GENERATE TRAINING REPORT
+    # ======================================================
+
+    generate_training_report(
+        dataset_name,
+        task_type,
+        final_model.__class__.__name__,
+        training_mode,
+        cv_mean,
+        train_score,
+        test_score,
+        model_path
+    )
+
 
 # ==========================================================
-# CLI
+# CLI MENU
 # ==========================================================
 
 if __name__ == "__main__":
 
-    print("1. Train Model")
-    print("2. Run Inference")
+    while True:
 
-    choice = input()
+        print("\n=========== ML ENGINE ===========")
+        print("1. Train Model")
+        print("2. Run Inference")
+        print("3. List Available Models")
+        print("4. Exit")
 
-    if choice == "1":
-        csv_path = input("Enter CSV path: ")
-        target_col = input("Enter target column: ")
-        train(csv_path, target_col)
+        choice = input("Select option: ")
 
-    elif choice == "2":
-        csv_path = input("Enter inference CSV path: ")
-        run_inference(csv_path)
+        if choice == "1":
 
-    else:
-        print("Invalid option.")
+            csv_path = input("Enter CSV path: ")
+            target_col = input("Enter target column: ")
+
+            train(csv_path, target_col)
+
+        elif choice == "2":
+
+            csv_path = input("Enter inference CSV path:")
+            run_inference(csv_path)
+
+        elif choice == "3":
+
+            list_available_models()
+
+        elif choice == "4":
+
+            print("Exiting ML Engine.")
+            break
+
+        else:
+            print("Invalid option.")
