@@ -50,7 +50,12 @@ def update_leaderboard(
         "gap": gap
     }
 
-    df = pd.concat([df, pd.DataFrame([new_entry])], ignore_index=True)
+    new_df = pd.DataFrame([new_entry])
+
+    if df.empty:
+        df = new_df
+    else:
+        df = pd.concat([df, new_df], ignore_index=True)
 
     df.to_csv(leaderboard_file, index=False)
 

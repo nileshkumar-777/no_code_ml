@@ -5,19 +5,49 @@ def tune_model(pipeline, model_name, X_train, y_train, scoring):
 
     param_grids = {
 
-        "RandomForest": {
+        # --------------------------------------------------
+        # RANDOM FOREST
+        # --------------------------------------------------
+
+        "RandomForestRegressor": {
             "model__n_estimators": [100, 200, 300],
             "model__max_depth": [None, 10, 20],
             "model__min_samples_split": [2, 5]
         },
 
-        "XGBoost": {
+        "RandomForestClassifier": {
+            "model__n_estimators": [100, 200, 300],
+            "model__max_depth": [None, 10, 20],
+            "model__min_samples_split": [2, 5]
+        },
+
+        # --------------------------------------------------
+        # XGBOOST
+        # --------------------------------------------------
+
+        "XGBRegressor": {
             "model__n_estimators": [200, 300, 400],
             "model__learning_rate": [0.01, 0.05, 0.1],
             "model__max_depth": [4, 6, 8]
         },
 
-        "GradientBoosting": {
+        "XGBClassifier": {
+            "model__n_estimators": [200, 300, 400],
+            "model__learning_rate": [0.01, 0.05, 0.1],
+            "model__max_depth": [4, 6, 8]
+        },
+
+        # --------------------------------------------------
+        # GRADIENT BOOSTING
+        # --------------------------------------------------
+
+        "GradientBoostingRegressor": {
+            "model__n_estimators": [100, 200],
+            "model__learning_rate": [0.05, 0.1],
+            "model__max_depth": [3, 5]
+        },
+
+        "GradientBoostingClassifier": {
             "model__n_estimators": [100, 200],
             "model__learning_rate": [0.05, 0.1],
             "model__max_depth": [3, 5]
@@ -25,9 +55,21 @@ def tune_model(pipeline, model_name, X_train, y_train, scoring):
 
     }
 
+    # ------------------------------------------------------
+    # If model has no tuning grid → train normally
+    # ------------------------------------------------------
+
     if model_name not in param_grids:
-        print("No tuning grid for this model.")
+
+        print("No tuning grid for this model. Using default parameters.")
+
+        pipeline.fit(X_train, y_train)
+
         return pipeline
+
+    # ------------------------------------------------------
+    # Run Hyperparameter Search
+    # ------------------------------------------------------
 
     print(f"\nRunning hyperparameter tuning for {model_name}...")
 

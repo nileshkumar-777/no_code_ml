@@ -4,9 +4,11 @@
 
 import os
 
-# Base directory to store trained models
-MODEL_DIR = "models"
+# Absolute project directory
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Create models folder if it doesn't exist
-if not os.path.exists(MODEL_DIR):
-    os.makedirs(MODEL_DIR)
+# Models directory
+MODEL_DIR = os.path.join(BASE_DIR, "models")
+
+# Ensure models folder exists
+os.makedirs(MODEL_DIR, exist_ok=True)

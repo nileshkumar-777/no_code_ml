@@ -26,6 +26,10 @@ from xgboost import XGBClassifier
 from xgboost import XGBRegressor
 
 
+# ==========================================================
+#                   MODEL SELECTION FUNCTION
+# ==========================================================
+
 def get_models(task_type):
     """
     Returns dictionary of models depending on task type.
@@ -40,22 +44,45 @@ def get_models(task_type):
     # ======================================================
     # CLASSIFICATION MODELS
     # ======================================================
+
     if task_type == "classification":
 
         models = {
-            "RandomForest": RandomForestClassifier(random_state=42),
 
-            "LogisticRegression": LogisticRegression(max_iter=1000),
+            # Handles imbalance automatically
+            "RandomForest": RandomForestClassifier(
+                random_state=42,
+                class_weight="balanced"
+            ),
 
+            # Handles imbalance
+            "LogisticRegression": LogisticRegression(
+                max_iter=1000,
+                class_weight="balanced"
+            ),
+
+            # KNN does NOT support class_weight
             "KNN": KNeighborsClassifier(),
 
-            "SVC": SVC(),
+            # SVC with imbalance handling + probability support
+            "SVC": SVC(
+                probability=True,
+                class_weight="balanced"
+            ),
 
-            "DecisionTree": DecisionTreeClassifier(random_state=42),
+            # Handles imbalance
+            "DecisionTree": DecisionTreeClassifier(
+                random_state=42,
+                class_weight="balanced"
+            ),
 
-            "GradientBoosting": GradientBoostingClassifier(random_state=42),
+            # GradientBoosting does NOT support class_weight
+            "GradientBoosting": GradientBoostingClassifier(
+                random_state=42
+            ),
 
-            # 🔥 NEW → XGBOOST CLASSIFIER
+            # 🔥 XGBoost Classifier
+            # scale_pos_weight helps with imbalance
             "XGBoost": XGBClassifier(
                 n_estimators=200,
                 learning_rate=0.1,
@@ -71,10 +98,14 @@ def get_models(task_type):
     # ======================================================
     # REGRESSION MODELS
     # ======================================================
+
     elif task_type == "regression":
 
         models = {
-            "RandomForest": RandomForestRegressor(random_state=42),
+
+            "RandomForest": RandomForestRegressor(
+                random_state=42
+            ),
 
             "LinearRegression": LinearRegression(),
 
@@ -82,11 +113,15 @@ def get_models(task_type):
 
             "SVR": SVR(),
 
-            "DecisionTree": DecisionTreeRegressor(random_state=42),
+            "DecisionTree": DecisionTreeRegressor(
+                random_state=42
+            ),
 
-            "GradientBoosting": GradientBoostingRegressor(random_state=42),
+            "GradientBoosting": GradientBoostingRegressor(
+                random_state=42
+            ),
 
-            # 🔥 NEW → XGBOOST REGRESSOR
+            # 🔥 XGBoost Regressor
             "XGBoost": XGBRegressor(
                 n_estimators=300,
                 learning_rate=0.05,
